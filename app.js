@@ -984,269 +984,186 @@ async function bootstrap(){
     DATA = genTracks(120);
   }
   
-  initGenres();setupUI();updateDisplays();buildPlaylist()
+  initGenres();setupUI();updateDisplays();buildPlaylist();
+  DJ.init();
 }
-document.addEventListener("DOMContentLoaded",bootstrap);
 
-/* ═══════════════════════════════════════════════════════════════
-   AI DJ — Claude-powered playlist intelligence
-   ═══════════════════════════════════════════════════════════════ */
-
+/* ═══════════════════════════════════════════════
+   AI DJ — Claude integration
+   ═══════════════════════════════════════════════ */
 const DJ = (() => {
-  // Conversation history for multi-turn chat
   let chatHistory = [];
-  let isBusy = false;
+  let busy = false;
 
-  // ── Helpers ─────────────────────────────────────────────────
+  const feed = () => document.getElementById('djFeed');
 
-  function feed() { return document.getElementById('djFeed'); }
-
-  function clearEmptyState() {
-    const empty = feed().querySelector('.dj-empty-state');
-    if (empty) empty.remove();
-  }
-
-  function addMessage(role, html, type = 'dj') {
-    clearEmptyState();
-    const div = document.createElement('div');
-    div.className = `dj-message dj-message--${role === 'error' ? 'error' : type}`;
-    const label = role === 'assistant' ? '🎧 DJ' : role === 'user' ? 'You' : '⚠ Error';
-    div.innerHTML = `<div class="dj-message-label">${label}</div><div>${html}</div>`;
-    feed().appendChild(div);
-    feed().scrollTop = feed().scrollHeight;
-    return div;
+  function clearEmpty() {
+    const e = feed().querySelector('.dj-empty-state');
+    if (e) e.remove();
   }
 
   function showTyping() {
-    clearEmptyState();
+    clearEmpty();
     const el = document.createElement('div');
-    el.className = 'dj-typing';
-    el.id = 'djTyping';
+    el.className = 'dj-typing'; el.id = 'djTyping';
     el.innerHTML = '<div class="dj-typing-dot"></div><div class="dj-typing-dot"></div><div class="dj-typing-dot"></div>';
     feed().appendChild(el);
     feed().scrollTop = feed().scrollHeight;
   }
 
-  function hideTyping() {
-    const el = document.getElementById('djTyping');
-    if (el) el.remove();
-  }
+  function hideTyping() { document.getElementById('djTyping')?.remove(); }
 
-  function setBusy(busy) {
-    isBusy = busy;
+  function setBusy(b) {
+    busy = b;
     ['djAnalyze','djIntro','djSend'].forEach(id => {
       const el = document.getElementById(id);
-      if (el) el.disabled = busy;
+      if (el) el.disabled = b;
     });
   }
 
-  // ── Build playlist context string ────────────────────────────
+  function addMsg(type, html) {
+    clearEmpty();
+    const d = document.createElement('div');
+    const cls = type === 'user' ? 'dj-message--user' : type === 'error' ? 'dj-message--error' : 'dj-message--dj';
+    const label = type === 'user' ? 'You' : type === 'error' ? '⚠ Error' : '🎧 DJ';
+    d.className = `dj-message ${cls}`;
+    d.innerHTML = `<div class="dj-message-label">${label}</div><div class="dj-message-body">${html}</div>`;
+    feed().appendChild(d);
+    feed().scrollTop = feed().scrollHeight;
+  }
 
-  function playlistContext() {
+  function buildContext() {
     if (!LAST_SEQ || !LAST_SEQ.length) return 'No playlist built yet.';
-    const lines = LAST_SEQ.map((t, i) => {
+    const rows = LAST_SEQ.map((t, i) => {
       const f = t.features;
-      const key = pitchNames[f.key] + (f.mode ? ' maj' : ' min');
-      return `${i+1}. "${t.name}" by ${t.artists.join(', ')} — genres: ${t.genres.join('/')} | energy: ${f.energy.toFixed(2)} | tempo: ${f.tempo} BPM | valence: ${f.valence.toFixed(2)} | key: ${key}`;
-    });
+      return `${i+1}. "${t.name}" by ${t.artists.join(', ')} | genres:${t.genres.join('/')} | energy:${f.energy.toFixed(2)} | tempo:${f.tempo}bpm | valence:${f.valence.toFixed(2)} | key:${pitchNames[f.key]} ${f.mode?'maj':'min'}`;
+    }).join('\n');
     const avgE = (LAST_SEQ.reduce((s,t)=>s+t.features.energy,0)/LAST_SEQ.length).toFixed(2);
     const avgT = Math.round(LAST_SEQ.reduce((s,t)=>s+t.features.tempo,0)/LAST_SEQ.length);
-    return `Playlist (${LAST_SEQ.length} tracks, avg energy ${avgE}, avg tempo ${avgT} BPM):\n${lines.join('\n')}`;
+    return `${LAST_SEQ.length} tracks | avg energy ${avgE} | avg tempo ${avgT}bpm\n${rows}`;
   }
 
-  function userTargets() {
-    const sliders = ['energy','tempo','valence','danceability','acousticness','instrumentalness'];
-    return sliders.map(id => {
-      const el = document.getElementById(id);
-      return el ? `${id}: ${parseFloat(el.value).toFixed(2)}` : null;
-    }).filter(Boolean).join(', ');
+  function getTargets() {
+    const ids = ['energy','tempo','valence','danceability','acousticness','instrumentalness'];
+    return ids.map(id => { const el = document.getElementById(id); return el ? `${id}:${parseFloat(el.value).toFixed(2)}` : null; }).filter(Boolean).join(' ');
   }
 
-  // ── Claude API call ──────────────────────────────────────────
-
-  async function callClaude(messages, systemPrompt) {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+  async function callClaude(messages) {
+    const SYSTEM = `You are an expert AI DJ and music curator with deep knowledge of music theory, harmonic mixing, energy management, and DJ technique. Be enthusiastic but precise. No markdown. Use → for transitions. Keep responses tight and actionable.`;
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        system: systemPrompt,
-        messages
-      })
+      body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1000, system: SYSTEM, messages })
     });
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      throw new Error(err.error?.message || `API error ${response.status}`);
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.error?.message || `API ${res.status} — add your Anthropic API key to a backend proxy`);
     }
-    const data = await response.json();
+    const data = await res.json();
     return data.content.map(b => b.text || '').join('');
   }
 
-  const DJ_SYSTEM = `You are an expert AI DJ and music curator. You have deep knowledge of music theory, mixing, song transitions, genres, and playlist flow. You speak with personality — enthusiastic but concise. When analyzing playlists:
-- Comment on energy arc, genre cohesion, tempo flow, and key compatibility
-- Give concrete, specific mix transition tips between consecutive tracks (beat matching, key changes, energy drops)
-- Generate punchy one-line track intros a real DJ would say before dropping a track
-- When chatting, help the user adjust their vibe — suggest changes, reorders, or additions
-Keep all responses tight and readable. Use plain text (no markdown headers). Use → for transitions.`;
-
-  // ── Feature 1: Analyze Playlist ─────────────────────────────
-
   async function analyze() {
-    if (isBusy) return;
-    if (!LAST_SEQ || !LAST_SEQ.length) {
-      addMessage('error', 'Build a playlist first, then I can analyze it.', 'error');
-      return;
-    }
-    setBusy(true);
-    showTyping();
+    if (busy) return;
+    if (!LAST_SEQ || !LAST_SEQ.length) { addMsg('error', 'Build a playlist first.'); return; }
+    setBusy(true); showTyping();
+    const prompt = `Analyze this DJ set:\n1. Overall vibe (2 sentences)\n2. Energy arc — does it build and resolve well?\n3. Best 2 transitions and why\n4. Worst transition and exact fix\n5. One structural improvement\n\nPlaylist:\n${buildContext()}\nTargets: ${getTargets()}`;
     try {
-      const prompt = `Analyze this playlist for a DJ set. Give:\n1. A 2-3 sentence overall vibe assessment\n2. Energy arc commentary (does it flow well?)\n3. The 2-3 best transition moments and why\n4. The weakest transition and a fix\n5. One overall suggestion to improve the set\n\n${playlistContext()}\n\nUser targets: ${userTargets()}`;
-
-      const messages = [{ role: 'user', content: prompt }];
-      const reply = await callClaude(messages, DJ_SYSTEM);
-      chatHistory.push({ role: 'user', content: prompt });
-      chatHistory.push({ role: 'assistant', content: reply });
-
+      const reply = await callClaude([{ role: 'user', content: prompt }]);
+      chatHistory.push({ role: 'user', content: prompt }, { role: 'assistant', content: reply });
       hideTyping();
-      addMessage('assistant', reply.replace(/\n/g, '<br>'));
-    } catch (e) {
+      addMsg('dj', reply.replace(/\n/g, '<br>'));
+    } catch(e) {
       hideTyping();
-      addMessage('error', `Couldn't reach Claude: ${e.message}`, 'error');
+      addMsg('error', e.message);
     }
     setBusy(false);
   }
 
-  // ── Feature 2: Track Intros + Mix Tips ──────────────────────
-
-  async function generateIntros() {
-    if (isBusy) return;
-    if (!LAST_SEQ || !LAST_SEQ.length) {
-      addMessage('error', 'Build a playlist first.', 'error');
-      return;
-    }
-    setBusy(true);
-    showTyping();
+  async function intros() {
+    if (busy) return;
+    if (!LAST_SEQ || !LAST_SEQ.length) { addMsg('error', 'Build a playlist first.'); return; }
+    setBusy(true); showTyping();
+    const prompt = `For each track write:\nINTRO: one punchy live DJ drop line\nMIX: one specific transition tip from previous track (track 1: "opener")\n\nFormat each line as: #N | INTRO: ... | MIX: ...\n\nPlaylist:\n${buildContext()}`;
     try {
-      const prompt = `For each track in this playlist, give me:
-- A punchy DJ intro line (1 sentence max, the kind a live DJ says before dropping it)
-- A mix tip for transitioning INTO it from the previous track (skip for track 1)
-
-Format each as:
-TRACK [number]: [track name]
-INTRO: [one-line DJ intro]
-MIX TIP: [transition tip from previous track, or "Opening track — set the energy here"]
-
-${playlistContext()}`;
-
-      const messages = [{ role: 'user', content: prompt }];
-      const reply = await callClaude(messages, DJ_SYSTEM);
-      chatHistory.push({ role: 'user', content: prompt });
-      chatHistory.push({ role: 'assistant', content: reply });
-
+      const reply = await callClaude([{ role: 'user', content: prompt }]);
+      chatHistory.push({ role: 'user', content: prompt }, { role: 'assistant', content: reply });
       hideTyping();
-      renderTrackIntros(reply);
-    } catch (e) {
+      renderIntros(reply);
+    } catch(e) {
       hideTyping();
-      addMessage('error', `Couldn't reach Claude: ${e.message}`, 'error');
+      addMsg('error', e.message);
     }
     setBusy(false);
   }
 
-  function renderTrackIntros(raw) {
-    clearEmptyState();
-    // Parse Claude's structured output
-    const blocks = raw.split(/TRACK \d+:/g).filter(b => b.trim());
-    if (!blocks.length) {
-      addMessage('assistant', raw.replace(/\n/g, '<br>'));
-      return;
-    }
+  function renderIntros(raw) {
+    clearEmpty();
+    const wrap = document.createElement('div');
+    wrap.className = 'dj-message dj-message--dj';
+    wrap.innerHTML = '<div class="dj-message-label">🎧 DJ — Track Intros & Mix Tips</div>';
+    const cards = document.createElement('div');
+    cards.style.cssText = 'display:flex;flex-direction:column;gap:6px;margin-top:8px';
 
-    const wrapper = document.createElement('div');
-    wrapper.className = 'dj-message dj-message--dj';
-    wrapper.innerHTML = '<div class="dj-message-label">🎧 DJ — Track Intros & Mix Tips</div>';
-
-    blocks.forEach((block, i) => {
-      const introMatch = block.match(/INTRO:\s*(.+?)(?:\n|MIX TIP)/s);
-      const mixMatch   = block.match(/MIX TIP:\s*(.+?)(?:\n|$)/s);
-      const trackName  = LAST_SEQ[i] ? `${LAST_SEQ[i].name} — ${LAST_SEQ[i].artists[0]}` : `Track ${i+1}`;
-      const intro      = introMatch ? introMatch[1].trim() : '';
-      const mixTip     = mixMatch   ? mixMatch[1].trim()   : '';
-
+    const lines = raw.split('\n').filter(l => l.trim().match(/^#\d+/));
+    lines.forEach((line, i) => {
+      const t = LAST_SEQ[i]; if (!t) return;
+      const introM = line.match(/INTRO:\s*([^|]+)/i);
+      const mixM   = line.match(/MIX:\s*(.+)/i);
       const card = document.createElement('div');
       card.className = 'dj-track-card';
       card.innerHTML = `
         <div class="dj-track-num">${String(i+1).padStart(2,'0')}</div>
         <div class="dj-track-info">
-          <div class="dj-track-name">${trackName}</div>
-          ${intro    ? `<div class="dj-track-intro">"${intro}"</div>` : ''}
-          ${mixTip   ? `<div class="dj-mix-tip">${mixTip}</div>` : ''}
+          <div class="dj-track-name">${t.artists[0]} — ${t.name}</div>
+          ${introM ? `<div class="dj-track-intro">"${introM[1].trim()}"</div>` : ''}
+          ${mixM   ? `<div class="dj-mix-tip">${mixM[1].trim()}</div>` : ''}
         </div>`;
-      wrapper.appendChild(card);
+      cards.appendChild(card);
     });
 
-    feed().appendChild(wrapper);
+    if (!cards.children.length) {
+      wrap.innerHTML += raw.replace(/\n/g, '<br>');
+    } else {
+      wrap.appendChild(cards);
+    }
+    feed().appendChild(wrap);
     feed().scrollTop = feed().scrollHeight;
   }
 
-  // ── Feature 3: Chat ──────────────────────────────────────────
-
   async function chat(userMsg) {
-    if (isBusy || !userMsg.trim()) return;
+    if (busy || !userMsg.trim()) return;
     setBusy(true);
-
-    addMessage('user', userMsg, 'user');
-
-    // Build context-aware message
-    const contextualMsg = `${userMsg}\n\n[Current playlist context: ${playlistContext()}\nUser targets: ${userTargets()}]`;
-
-    chatHistory.push({ role: 'user', content: contextualMsg });
-    // Keep history bounded
+    addMsg('user', userMsg);
+    const fullMsg = `${userMsg}\n\n[Playlist: ${buildContext()}\nTargets: ${getTargets()}]`;
+    chatHistory.push({ role: 'user', content: fullMsg });
     if (chatHistory.length > 20) chatHistory = chatHistory.slice(-20);
-
     showTyping();
     try {
-      const reply = await callClaude(chatHistory, DJ_SYSTEM);
+      const reply = await callClaude(chatHistory);
       chatHistory.push({ role: 'assistant', content: reply });
       hideTyping();
-      addMessage('assistant', reply.replace(/\n/g, '<br>'));
-    } catch (e) {
+      addMsg('dj', reply.replace(/\n/g, '<br>'));
+    } catch(e) {
       hideTyping();
-      addMessage('error', `Couldn't reach Claude: ${e.message}`, 'error');
-      chatHistory.pop(); // remove failed user msg
+      addMsg('error', e.message);
+      chatHistory.pop();
     }
     setBusy(false);
   }
 
-  // ── Init ─────────────────────────────────────────────────────
-
   function init() {
     document.getElementById('djAnalyze').addEventListener('click', analyze);
-    document.getElementById('djIntro').addEventListener('click', generateIntros);
-
-    const sendBtn   = document.getElementById('djSend');
-    const chatInput = document.getElementById('djChatInput');
-
-    sendBtn.addEventListener('click', () => {
-      const msg = chatInput.value.trim();
-      if (msg) { chat(msg); chatInput.value = ''; }
-    });
-
-    chatInput.addEventListener('keydown', e => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        const msg = chatInput.value.trim();
-        if (msg) { chat(msg); chatInput.value = ''; }
-      }
+    document.getElementById('djIntro').addEventListener('click', intros);
+    const input = document.getElementById('djChatInput');
+    const send  = document.getElementById('djSend');
+    send.addEventListener('click', () => { const m = input.value.trim(); if (m) { chat(m); input.value = ''; } });
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); const m = input.value.trim(); if (m) { chat(m); input.value = ''; } }
     });
   }
 
-  return { init, analyze, generateIntros, chat };
+  return { init };
 })();
 
-// Initialise AI DJ after bootstrap
-const _origBootstrap = bootstrap;
-async function bootstrap() {
-  await _origBootstrap();
-  DJ.init();
-}
+document.addEventListener('DOMContentLoaded', bootstrap);
