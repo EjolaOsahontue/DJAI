@@ -258,7 +258,20 @@ function redirectUri(){
 }
 function b64url(buf){let s=btoa(String.fromCharCode.apply(null,new Uint8Array(buf)));return s.replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"")}
 async function sha256Buf(s){const enc=new TextEncoder().encode(s);const hash=await crypto.subtle.digest("SHA-256",enc);return new Uint8Array(hash)}
-async function startLogin(){const verifier=Array.from(crypto.getRandomValues(new Uint8Array(32))).map(b=>("0"+b.toString(16)).slice(-2)).join("");const chBuf=await sha256Buf(verifier);const challenge=b64url(chBuf);localStorage.setItem("sp_verifier",verifier);const scope=["user-library-read","playlist-modify-public","playlist-modify-private","user-read-email","user-read-private"].join(" ");const url=new URL("https://accounts.spotify.com/authorize");url.searchParams.set("response_type","code");url.searchParams.set("client_id",SPOTIFY_CLIENT_ID);url.searchParams.set("scope",scope);url.searchParams.set("redirect_uri",redirectUri());url.searchParams.set("code_challenge_method","S256");url.searchParams.set("code_challenge",challenge);window.location.href=url.toString()}
+async function startLogin(){const verifier=Array.from(crypto.getRandomValues(new Uint8Array(32))).map(b=>("0"+b.toString(16)).slice(-2)).join("");const chBuf=await sha256Buf(verifier);const challenge=b64url(chBuf);localStorage.setItem("sp_verifier",verifier);const scope=[
+  "user-library-read",
+  "playlist-modify-public",
+  "playlist-modify-private", 
+  "user-read-email",
+  "user-read-private",
+  "streaming",                    // Required for Web Playback SDK
+  "user-read-playback-state",     // Required for playback control
+  "user-modify-playback-state",   // Required for play/pause
+  "user-read-currently-playing",  // See what's playing
+  "app-remote-control",           // Full remote control
+  "user-read-recently-played",    // Access listening history
+  "user-top-read"                 // Access top tracks/artists
+].join(" ");const url=new URL("https://accounts.spotify.com/authorize");url.searchParams.set("response_type","code");url.searchParams.set("client_id",SPOTIFY_CLIENT_ID);url.searchParams.set("scope",scope);url.searchParams.set("redirect_uri",redirectUri());url.searchParams.set("code_challenge_method","S256");url.searchParams.set("code_challenge",challenge);window.location.href=url.toString()}
 async function exchangeCode(code){const verifier=localStorage.getItem("sp_verifier")||"";const body=new URLSearchParams();body.set("client_id",SPOTIFY_CLIENT_ID);body.set("grant_type","authorization_code");body.set("code",code);body.set("redirect_uri",redirectUri());body.set("code_verifier",verifier);const res=await fetch("https://accounts.spotify.com/api/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body});if(!res.ok)return null;const tok=await res.json();const now=Math.floor(Date.now()/1000);localStorage.setItem("sp_access",tok.access_token);localStorage.setItem("sp_refresh",tok.refresh_token||"");localStorage.setItem("sp_exp",String(now+tok.expires_in-30));return tok.access_token}
 function accessToken(){const exp=parseInt(localStorage.getItem("sp_exp")||"0",10);const now=Math.floor(Date.now()/1000);const t=localStorage.getItem("sp_access");if(!t||now>=exp)return null;return t}
 async function handleAuthOnLoad(){
