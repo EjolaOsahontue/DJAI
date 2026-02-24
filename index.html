@@ -91,6 +91,46 @@
         <h2>Playlist</h2>
         <ol id="playlist" class="playlist"></ol>
       </section>
+
+      <!-- AI DJ PANEL -->
+      <section class="panel ai-dj-panel">
+        <div class="ai-dj-header">
+          <div class="ai-dj-title">
+            <div class="ai-dj-pulse"></div>
+            <h2 style="margin:0;border:none;padding:0;">AI DJ</h2>
+            <span class="ai-dj-badge">Claude</span>
+          </div>
+          <div class="ai-dj-controls">
+            <button class="ai-dj-btn" id="djAnalyze" title="Analyze current playlist">Analyze Playlist</button>
+            <button class="ai-dj-btn ai-dj-btn--secondary" id="djIntro" title="Generate track intros">Track Intros</button>
+          </div>
+        </div>
+
+        <!-- DJ Commentary feed — lives between tracks -->
+        <div class="ai-dj-feed" id="djFeed">
+          <div class="dj-empty-state">
+            <div class="dj-empty-icon">🎧</div>
+            <p>Build a playlist, then let the AI DJ analyze your mix, generate track intros, and suggest improvements.</p>
+          </div>
+        </div>
+
+        <!-- Chat with DJ -->
+        <div class="ai-dj-chat">
+          <div class="ai-dj-chat-label">Chat with your DJ</div>
+          <div class="ai-dj-chat-input-row">
+            <input
+              type="text"
+              id="djChatInput"
+              class="ai-dj-input"
+              placeholder="e.g. Make it more energetic, suggest a better transition for track 3..."
+              autocomplete="off"
+            />
+            <button class="ai-dj-send" id="djSend">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            </button>
+          </div>
+        </div>
+      </section>
     </main>
     <footer class="footer">
       <span>Local demo uses synthetic audio features</span>
@@ -99,4 +139,3 @@
   <script src="app.js"></script>
 </body>
 </html>
-

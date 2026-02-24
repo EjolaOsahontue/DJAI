@@ -987,3 +987,266 @@ async function bootstrap(){
   initGenres();setupUI();updateDisplays();buildPlaylist()
 }
 document.addEventListener("DOMContentLoaded",bootstrap);
+
+/* ═══════════════════════════════════════════════════════════════
+   AI DJ — Claude-powered playlist intelligence
+   ═══════════════════════════════════════════════════════════════ */
+
+const DJ = (() => {
+  // Conversation history for multi-turn chat
+  let chatHistory = [];
+  let isBusy = false;
+
+  // ── Helpers ─────────────────────────────────────────────────
+
+  function feed() { return document.getElementById('djFeed'); }
+
+  function clearEmptyState() {
+    const empty = feed().querySelector('.dj-empty-state');
+    if (empty) empty.remove();
+  }
+
+  function addMessage(role, html, type = 'dj') {
+    clearEmptyState();
+    const div = document.createElement('div');
+    div.className = `dj-message dj-message--${role === 'error' ? 'error' : type}`;
+    const label = role === 'assistant' ? '🎧 DJ' : role === 'user' ? 'You' : '⚠ Error';
+    div.innerHTML = `<div class="dj-message-label">${label}</div><div>${html}</div>`;
+    feed().appendChild(div);
+    feed().scrollTop = feed().scrollHeight;
+    return div;
+  }
+
+  function showTyping() {
+    clearEmptyState();
+    const el = document.createElement('div');
+    el.className = 'dj-typing';
+    el.id = 'djTyping';
+    el.innerHTML = '<div class="dj-typing-dot"></div><div class="dj-typing-dot"></div><div class="dj-typing-dot"></div>';
+    feed().appendChild(el);
+    feed().scrollTop = feed().scrollHeight;
+  }
+
+  function hideTyping() {
+    const el = document.getElementById('djTyping');
+    if (el) el.remove();
+  }
+
+  function setBusy(busy) {
+    isBusy = busy;
+    ['djAnalyze','djIntro','djSend'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.disabled = busy;
+    });
+  }
+
+  // ── Build playlist context string ────────────────────────────
+
+  function playlistContext() {
+    if (!LAST_SEQ || !LAST_SEQ.length) return 'No playlist built yet.';
+    const lines = LAST_SEQ.map((t, i) => {
+      const f = t.features;
+      const key = pitchNames[f.key] + (f.mode ? ' maj' : ' min');
+      return `${i+1}. "${t.name}" by ${t.artists.join(', ')} — genres: ${t.genres.join('/')} | energy: ${f.energy.toFixed(2)} | tempo: ${f.tempo} BPM | valence: ${f.valence.toFixed(2)} | key: ${key}`;
+    });
+    const avgE = (LAST_SEQ.reduce((s,t)=>s+t.features.energy,0)/LAST_SEQ.length).toFixed(2);
+    const avgT = Math.round(LAST_SEQ.reduce((s,t)=>s+t.features.tempo,0)/LAST_SEQ.length);
+    return `Playlist (${LAST_SEQ.length} tracks, avg energy ${avgE}, avg tempo ${avgT} BPM):\n${lines.join('\n')}`;
+  }
+
+  function userTargets() {
+    const sliders = ['energy','tempo','valence','danceability','acousticness','instrumentalness'];
+    return sliders.map(id => {
+      const el = document.getElementById(id);
+      return el ? `${id}: ${parseFloat(el.value).toFixed(2)}` : null;
+    }).filter(Boolean).join(', ');
+  }
+
+  // ── Claude API call ──────────────────────────────────────────
+
+  async function callClaude(messages, systemPrompt) {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system: systemPrompt,
+        messages
+      })
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error?.message || `API error ${response.status}`);
+    }
+    const data = await response.json();
+    return data.content.map(b => b.text || '').join('');
+  }
+
+  const DJ_SYSTEM = `You are an expert AI DJ and music curator. You have deep knowledge of music theory, mixing, song transitions, genres, and playlist flow. You speak with personality — enthusiastic but concise. When analyzing playlists:
+- Comment on energy arc, genre cohesion, tempo flow, and key compatibility
+- Give concrete, specific mix transition tips between consecutive tracks (beat matching, key changes, energy drops)
+- Generate punchy one-line track intros a real DJ would say before dropping a track
+- When chatting, help the user adjust their vibe — suggest changes, reorders, or additions
+Keep all responses tight and readable. Use plain text (no markdown headers). Use → for transitions.`;
+
+  // ── Feature 1: Analyze Playlist ─────────────────────────────
+
+  async function analyze() {
+    if (isBusy) return;
+    if (!LAST_SEQ || !LAST_SEQ.length) {
+      addMessage('error', 'Build a playlist first, then I can analyze it.', 'error');
+      return;
+    }
+    setBusy(true);
+    showTyping();
+    try {
+      const prompt = `Analyze this playlist for a DJ set. Give:\n1. A 2-3 sentence overall vibe assessment\n2. Energy arc commentary (does it flow well?)\n3. The 2-3 best transition moments and why\n4. The weakest transition and a fix\n5. One overall suggestion to improve the set\n\n${playlistContext()}\n\nUser targets: ${userTargets()}`;
+
+      const messages = [{ role: 'user', content: prompt }];
+      const reply = await callClaude(messages, DJ_SYSTEM);
+      chatHistory.push({ role: 'user', content: prompt });
+      chatHistory.push({ role: 'assistant', content: reply });
+
+      hideTyping();
+      addMessage('assistant', reply.replace(/\n/g, '<br>'));
+    } catch (e) {
+      hideTyping();
+      addMessage('error', `Couldn't reach Claude: ${e.message}`, 'error');
+    }
+    setBusy(false);
+  }
+
+  // ── Feature 2: Track Intros + Mix Tips ──────────────────────
+
+  async function generateIntros() {
+    if (isBusy) return;
+    if (!LAST_SEQ || !LAST_SEQ.length) {
+      addMessage('error', 'Build a playlist first.', 'error');
+      return;
+    }
+    setBusy(true);
+    showTyping();
+    try {
+      const prompt = `For each track in this playlist, give me:
+- A punchy DJ intro line (1 sentence max, the kind a live DJ says before dropping it)
+- A mix tip for transitioning INTO it from the previous track (skip for track 1)
+
+Format each as:
+TRACK [number]: [track name]
+INTRO: [one-line DJ intro]
+MIX TIP: [transition tip from previous track, or "Opening track — set the energy here"]
+
+${playlistContext()}`;
+
+      const messages = [{ role: 'user', content: prompt }];
+      const reply = await callClaude(messages, DJ_SYSTEM);
+      chatHistory.push({ role: 'user', content: prompt });
+      chatHistory.push({ role: 'assistant', content: reply });
+
+      hideTyping();
+      renderTrackIntros(reply);
+    } catch (e) {
+      hideTyping();
+      addMessage('error', `Couldn't reach Claude: ${e.message}`, 'error');
+    }
+    setBusy(false);
+  }
+
+  function renderTrackIntros(raw) {
+    clearEmptyState();
+    // Parse Claude's structured output
+    const blocks = raw.split(/TRACK \d+:/g).filter(b => b.trim());
+    if (!blocks.length) {
+      addMessage('assistant', raw.replace(/\n/g, '<br>'));
+      return;
+    }
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'dj-message dj-message--dj';
+    wrapper.innerHTML = '<div class="dj-message-label">🎧 DJ — Track Intros & Mix Tips</div>';
+
+    blocks.forEach((block, i) => {
+      const introMatch = block.match(/INTRO:\s*(.+?)(?:\n|MIX TIP)/s);
+      const mixMatch   = block.match(/MIX TIP:\s*(.+?)(?:\n|$)/s);
+      const trackName  = LAST_SEQ[i] ? `${LAST_SEQ[i].name} — ${LAST_SEQ[i].artists[0]}` : `Track ${i+1}`;
+      const intro      = introMatch ? introMatch[1].trim() : '';
+      const mixTip     = mixMatch   ? mixMatch[1].trim()   : '';
+
+      const card = document.createElement('div');
+      card.className = 'dj-track-card';
+      card.innerHTML = `
+        <div class="dj-track-num">${String(i+1).padStart(2,'0')}</div>
+        <div class="dj-track-info">
+          <div class="dj-track-name">${trackName}</div>
+          ${intro    ? `<div class="dj-track-intro">"${intro}"</div>` : ''}
+          ${mixTip   ? `<div class="dj-mix-tip">${mixTip}</div>` : ''}
+        </div>`;
+      wrapper.appendChild(card);
+    });
+
+    feed().appendChild(wrapper);
+    feed().scrollTop = feed().scrollHeight;
+  }
+
+  // ── Feature 3: Chat ──────────────────────────────────────────
+
+  async function chat(userMsg) {
+    if (isBusy || !userMsg.trim()) return;
+    setBusy(true);
+
+    addMessage('user', userMsg, 'user');
+
+    // Build context-aware message
+    const contextualMsg = `${userMsg}\n\n[Current playlist context: ${playlistContext()}\nUser targets: ${userTargets()}]`;
+
+    chatHistory.push({ role: 'user', content: contextualMsg });
+    // Keep history bounded
+    if (chatHistory.length > 20) chatHistory = chatHistory.slice(-20);
+
+    showTyping();
+    try {
+      const reply = await callClaude(chatHistory, DJ_SYSTEM);
+      chatHistory.push({ role: 'assistant', content: reply });
+      hideTyping();
+      addMessage('assistant', reply.replace(/\n/g, '<br>'));
+    } catch (e) {
+      hideTyping();
+      addMessage('error', `Couldn't reach Claude: ${e.message}`, 'error');
+      chatHistory.pop(); // remove failed user msg
+    }
+    setBusy(false);
+  }
+
+  // ── Init ─────────────────────────────────────────────────────
+
+  function init() {
+    document.getElementById('djAnalyze').addEventListener('click', analyze);
+    document.getElementById('djIntro').addEventListener('click', generateIntros);
+
+    const sendBtn   = document.getElementById('djSend');
+    const chatInput = document.getElementById('djChatInput');
+
+    sendBtn.addEventListener('click', () => {
+      const msg = chatInput.value.trim();
+      if (msg) { chat(msg); chatInput.value = ''; }
+    });
+
+    chatInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        const msg = chatInput.value.trim();
+        if (msg) { chat(msg); chatInput.value = ''; }
+      }
+    });
+  }
+
+  return { init, analyze, generateIntros, chat };
+})();
+
+// Initialise AI DJ after bootstrap
+const _origBootstrap = bootstrap;
+async function bootstrap() {
+  await _origBootstrap();
+  DJ.init();
+}
